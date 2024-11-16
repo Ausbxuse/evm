@@ -23,6 +23,43 @@ def loadVideo(video_path):
     return np.asarray(image_sequence), fps
 
 
+def rgb2rPPG(rgb_images, roi_coordinates=None):
+    num_frames, height, width, _ = rgb_images.shape
+    r_channel_series = []
+    g_channel_series = []
+    b_channel_series = []
+
+    for i in range(num_frames):
+        frame = rgb_images[i]
+
+        if roi_coordinates is not None:
+            x, y, w, h = roi_coordinates
+            roi = frame[y : y + h, x : x + w]
+        else:
+            roi = frame
+
+        if roi.size == 0:
+            raise ValueError("ROI coordinates are out of bounds or ROI has no area.")
+
+        avg_r = np.mean(roi[:, :, 0])
+        avg_g = np.mean(roi[:, :, 1])
+        avg_b = np.mean(roi[:, :, 2])
+
+        r_channel_series.append(avg_r)
+        g_channel_series.append(avg_g)
+        b_channel_series.append(avg_b)
+
+    r_channel_series = np.array(r_channel_series)
+    g_channel_series = np.array(g_channel_series)
+    b_channel_series = np.array(b_channel_series)
+
+    X = 3 * r_channel_series - 2 * g_channel_series
+    Y = 1.5 * r_channel_series + g_channel_series - 1.5 * b_channel_series
+    rPPG_images = X + Y
+
+    return rPPG_images
+
+
 def rgb2yiq(rgb_image):
     image = rgb_image.astype(np.float32)
     return image @ yiq_from_rgb.T

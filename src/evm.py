@@ -7,10 +7,8 @@ from gaussian_pyramid import (
     getGaussianPyramids,
     get_frequency_map,
 )
-from laplacian_pyramid import filterLaplacianPyramids, getLaplacianPyramids
 from processing import (
     getGaussianOutputVideo,
-    getLaplacianOutputVideo,
     loadVideo,
     saveVideo,
 )
@@ -39,29 +37,6 @@ def gaussian_evm(images, fps, kernel, level, alpha, freq_range, attenuation):
     return output_video
 
 
-def laplacian_evm(
-    images, fps, kernel, level, alpha, lambda_cutoff, freq_range, attenuation
-):
-
-    laplacian_pyramids = getLaplacianPyramids(images=images, kernel=kernel, level=level)
-
-    filtered_pyramids = filterLaplacianPyramids(
-        pyramids=laplacian_pyramids,
-        fps=fps,
-        freq_range=freq_range,
-        alpha=alpha,
-        attenuation=attenuation,
-        lambda_cutoff=lambda_cutoff,
-        level=level,
-    )
-
-    output_video = getLaplacianOutputVideo(
-        original_images=images, filtered_images=filtered_pyramids, kernel=kernel
-    )
-
-    return output_video
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Eulerian Video Magnification for colors and motions magnification"
@@ -79,7 +54,7 @@ if __name__ == "__main__":
         "--level",
         "-l",
         type=int,
-        help="Number of level of the Gaussian/Laplacian Pyramid",
+        help="Number of level of the Gaussian Pyramid",
         required=False,
         default=4,
     )
@@ -91,15 +66,6 @@ if __name__ == "__main__":
         help="Amplification factor",
         required=False,
         default=100,
-    )
-
-    parser.add_argument(
-        "--lambda_cutoff",
-        "-lc",
-        type=int,
-        help="λ cutoff for Laplacian EVM",
-        required=False,
-        default=1000,
     )
 
     parser.add_argument(
@@ -129,16 +95,6 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--mode",
-        "-m",
-        type=str,
-        help="Type of pyramids to use (gaussian or laplacian)",
-        choices=["gaussian", "laplacian"],
-        required=False,
-        default="gaussian",
-    )
-
-    parser.add_argument(
         "--attenuation",
         "-at",
         type=float,
@@ -154,7 +110,6 @@ if __name__ == "__main__":
     kwargs["alpha"] = args.alpha
     kwargs["freq_range"] = [args.low_omega, args.high_omega]
     kwargs["attenuation"] = args.attenuation
-    mode = args.mode
     video_path = args.video_path
 
     assert os.path.exists(video_path), f"Video {video_path} not found :("
@@ -163,10 +118,6 @@ if __name__ == "__main__":
     kwargs["images"] = images
     kwargs["fps"] = fps
 
-    if mode == "gaussian":
-        output_video = gaussian_evm(**kwargs)
-    else:
-        kwargs["lambda_cutoff"] = args.lambda_cutoff
-        output_video = laplacian_evm(**kwargs)
+    output_video = gaussian_evm(**kwargs)
 
     saveVideo(video=output_video, saving_path=args.saving_path, fps=fps)
