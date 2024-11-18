@@ -33,7 +33,7 @@ def select_segmenting_mask(image):
 
     # Define drawing parameters
     drawing = False  # True if the mouse is pressed
-    brush_size = 40
+    brush_size = 80
     brush_color = 255  # White color for the mask
 
     def mouse_callback(event, x, y, flags, param):
@@ -66,6 +66,7 @@ def select_segmenting_mask(image):
     print(" - Press 'c' to clear the mask and start over.")
     print(" - Press 'Esc' to cancel.")
 
+    display_image = cv2.cvtColor(display_image, cv2.COLOR_RGB2BGR)
     while True:
         cv2.imshow("Draw Mask", display_image)
         key = cv2.waitKey(1) & 0xFF

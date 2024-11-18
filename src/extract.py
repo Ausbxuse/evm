@@ -15,19 +15,30 @@ from methods import get_chrom_signal, get_green_signal
 from visual import draw_box, write_video
 
 
-# TODO: overlay heatmap onto original vid with seg mask
 class Pipeline:
     def __init__(self, video_path):
         self.video, self.fps = loadVideo(video_path=video_path)
         self.n_frames, self.height, self.width, _ = self.video.shape
-        self.window_size = 0 * 2 + 1
+        self.window_size = 1 * 2 + 1
         self.n_patches_h = self.height // self.window_size
         self.n_patches_w = self.width // self.window_size
         self.segmentation_mask = select_segmenting_mask(self.video[0])
-        image_mask = self.segmentation_mask
+        # Ensure the mask dimensions are divisible by window_size
+        new_height = self.n_patches_h * self.window_size
+        new_width = self.n_patches_w * self.window_size
+        mask_cropped = self.segmentation_mask[:new_height, :new_width]
+
+        mask_reshaped = mask_cropped.reshape(
+            self.n_patches_h, self.window_size, self.n_patches_w, self.window_size
+        )
+        self.patch_segmentation_mask = mask_reshaped.all(axis=(1, 3))
+        print(self.patch_segmentation_mask)
+        print(self.segmentation_mask)
+        print(self.patch_segmentation_mask.shape)
+        print(self.segmentation_mask.shape)
 
         masked_image = self.video[0].copy()
-        masked_image[~image_mask] = [0, 0, 0]
+        masked_image[~self.segmentation_mask] = [0, 0, 0]
         print(masked_image.shape)
         self.center_point = select_center_point(np.array(masked_image))
 
@@ -73,7 +84,7 @@ class Pipeline:
     def spatial_filter_video(self, freq_range):
         pyramids = getGaussianPyramids(self.video, gaussian_kernel, 3)
         blurred_video = filterGaussianPyramids(
-            pyramids, self.fps, freq_range, alpha=1, attenuation=1
+            pyramids, self.fps, freq_range, alpha=2, attenuation=1
         )  # TODO: check alpha
         return blurred_video
 
@@ -83,31 +94,45 @@ class Pipeline:
 
         snr_all = np.zeros((self.n_patches_h, self.n_patches_w))
 
-        valid_indices = np.where(self.segmentation_mask)
+        valid_indices = np.where(self.patch_segmentation_mask)
         for i, j in zip(valid_indices[0], valid_indices[1]):
             snr_all[i, j] = self.get_snr(
                 self.s_list[i, j, :], self.fps, heart_rate_range
             )
 
-        threshold = np.nanmean(snr_all) - np.nanstd(snr_all)
+        threshold = np.nanmean(snr_all) - 2 * np.nanstd(snr_all)
 
         self.valid_mask = (snr_all > threshold) & (~np.isnan(snr_all))
 
-    def calc_signal_ref(self):
+    def calc_signal_ref(self, neighborhood_size=1):
         center_i = self.center_point[0] // self.window_size
         center_j = self.center_point[1] // self.window_size
-        signal_ref = self.s_list[
-            center_i, center_j, :
-        ]  # TODO: use bigger window instead of the signal from s_list that uses smaller window
+
+        i_start = max(center_i - neighborhood_size, 0)
+        i_end = min(center_i + neighborhood_size + 1, self.n_patches_h)
+        j_start = max(center_j - neighborhood_size, 0)
+        j_end = min(center_j + neighborhood_size + 1, self.n_patches_w)
+
+        valid_signals = []
+
+        for i in range(i_start, i_end):
+            for j in range(j_start, j_end):
+                if self.patch_segmentation_mask[i, j]:
+                    valid_signals.append(self.s_list[i, j, :])
+
+        if not valid_signals:
+            raise ValueError("No valid neighboring patches found for signal reference.")
+
+        signal_ref = np.mean(valid_signals, axis=0)
+
         min_val = np.min(signal_ref)
         max_val = np.max(signal_ref)
 
         if max_val == min_val:
             signal_ref = np.zeros_like(signal_ref)
         else:
-            signal_ref = (signal_ref - min_val) / (
-                max_val - min_val
-            )  # range from 0 to 1
+            signal_ref = (signal_ref - min_val) / (max_val - min_val)
+
         self.signal_ref = signal_ref
 
     def calc_heart_rate(self):
@@ -188,7 +213,7 @@ class Pipeline:
             (i, j)
             for i in range(self.n_patches_h)
             for j in range(self.n_patches_w)
-            if self.segmentation_mask[i, j]
+            if self.patch_segmentation_mask[i, j]
         ]
 
         with Pool(
@@ -229,10 +254,7 @@ class Pipeline:
             (i, j)
             for i in range(self.n_patches_h)
             for j in range(self.n_patches_w)
-            if self.valid_mask[i, j]
-            and self.segmentation_mask[
-                i, j
-            ]  # TODO: does not handle the case where window_size is not 1
+            if self.valid_mask[i, j] and self.patch_segmentation_mask[i, j]
         ]
 
         with Pool(
@@ -243,7 +265,10 @@ class Pipeline:
             results = pool.map(self._compute_time_delay, indices, chunksize)
 
         for i, j, delay in results:
-            time_delays[i, j] = delay
+            if delay <= 0.3:
+                time_delays[i, j] = delay
+            else:
+                self.valid_mask[i, j] = False
 
         self.time_delays = time_delays
 
@@ -264,18 +289,14 @@ class Pipeline:
         x_start_flat = x_starts.flatten()
         x_end_flat = x_ends.flatten()
 
-        valid_segments = self.valid_mask.flatten() & self.segmentation_mask.flatten()
+        valid_segments = (self.valid_mask & self.patch_segmentation_mask).flatten()
 
         sample_indices = (self.time_delays.flatten() * self.fps).astype(int)
         sample_indices = sample_indices % len(self.signal_ref)
 
-        frame_indices = np.arange(self.n_frames).reshape(-1, 1)  # Shape: (n_frames, 1)
-        sample_indices_matrix = (frame_indices + sample_indices) % len(
-            self.signal_ref
-        )  # Shape: (n_frames, n_patches)
-        amplitudes = self.signal_ref[
-            sample_indices_matrix
-        ]  # Shape: (n_frames, n_patches)
+        frame_indices = np.arange(self.n_frames).reshape(-1, 1)  # (n_frames, 1)
+        sample_indices_matrix = (frame_indices + sample_indices) % len(self.signal_ref)
+        amplitudes = self.signal_ref[sample_indices_matrix]
 
         amplitudes[:, ~valid_segments] = 0
 
@@ -324,15 +345,11 @@ class Pipeline:
         heatmap_frames = self.get_heatmap_video()
         print("finish getting heatmap frames")
         heatmap_float = heatmap_frames.astype(np.float32)
-        red_channel = heatmap_float[..., 0]  # Shape: (n_frames, height, width)
-        red_normalized = red_channel / 255.0  # Shape: (n_frames, height, width)
+        red_channel = heatmap_float[..., 0]  # (n_frames, height, width)
+        red_normalized = red_channel / 255.0
         mask = red_normalized > 0.05
-        combined_mask = (
-            self.segmentation_mask & mask
-        )  # Shape: (n_frames, height, width)
-        mask = combined_mask[..., np.newaxis].repeat(
-            3, axis=-1
-        )  # Shape: (n_frames, height, width, 1)
+        combined_mask = self.segmentation_mask & mask  # (n_frames, height, width)
+        mask = combined_mask[..., np.newaxis].repeat(3, axis=-1)  # add channel dim
         overlaid_video = np.where(mask, heatmap_frames, self.video)
         write_video(overlaid_video, self.fps, "heatmap.avi")
 
