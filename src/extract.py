@@ -20,7 +20,7 @@ class Pipeline:
     def __init__(self, video_path):
         self.video, self.fps = loadVideo(video_path=video_path)
         self.n_frames, self.height, self.width, _ = self.video.shape
-        self.window_size = 0 * 2 + 1
+        self.window_size = 1 * 2 + 1
         self.n_patches_h = self.height // self.window_size
         self.n_patches_w = self.width // self.window_size
         self.segmentation_mask = select_segmenting_mask(self.video[0])
@@ -226,52 +226,52 @@ class Pipeline:
             s_list[i, j, :] = result
         self.s_list = s_list
 
-    # @staticmethod
-    # def init_pool_processes_time_delay(s_list_, signal_ref_, fps_):
-    #     global s_list
-    #     global signal_ref
-    #     global fps
-    #     s_list = s_list_
-    #     signal_ref = signal_ref_
-    #     fps = fps_
+    @staticmethod
+    def init_pool_processes_time_delay(s_list_, signal_ref_, fps_):
+        global s_list
+        global signal_ref
+        global fps
+        s_list = s_list_
+        signal_ref = signal_ref_
+        fps = fps_
 
-    # @staticmethod
-    # def _compute_time_delay(args):
-    #     i, j = args
-    #     s_patch = s_list[i, j, :]
-    #     f, Pxy = csd(s_patch, signal_ref, fs=fps, nperseg=256)
-    #     idx = np.argmax(np.abs(Pxy))
-    #     phase_spectrum = np.unwrap(np.angle(Pxy))
-    #     phase_diff = phase_spectrum[idx]
-    #     time_delay = phase_diff / (2 * np.pi * f[idx])
-    #     return (i, j, time_delay)
+    @staticmethod
+    def _compute_time_delay(args):
+        i, j = args
+        s_patch = s_list[i, j, :]
+        f, Pxy = csd(s_patch, signal_ref, fs=fps, nperseg=256)
+        idx = np.argmax(np.abs(Pxy))
+        phase_spectrum = np.unwrap(np.angle(Pxy))
+        phase_diff = phase_spectrum[idx]
+        time_delay = phase_diff / (2 * np.pi * f[idx])
+        return (i, j, time_delay)
 
-    # def calc_time_delays(self, chunksize=100):
+    def calc_time_delays(self, chunksize=100):
 
-    #     time_delays = np.zeros((self.n_patches_h, self.n_patches_w))
+        time_delays = np.zeros((self.n_patches_h, self.n_patches_w))
 
-    #     indices = [
-    #         (i, j)
-    #         for i in range(self.n_patches_h)
-    #         for j in range(self.n_patches_w)
-    #         if self.valid_mask[i, j] and self.patch_segmentation_mask[i, j]
-    #     ]
+        indices = [
+            (i, j)
+            for i in range(self.n_patches_h)
+            for j in range(self.n_patches_w)
+            if self.valid_mask[i, j] and self.patch_segmentation_mask[i, j]
+        ]
 
-    #     with Pool(
-    #         processes=cpu_count(),
-    #         initializer=self.init_pool_processes_time_delay,
-    #         initargs=(self.s_list, self.signal_ref, self.fps),
-    #     ) as pool:
-    #         results = pool.map(self._compute_time_delay, indices, chunksize)
+        with Pool(
+            processes=cpu_count(),
+            initializer=self.init_pool_processes_time_delay,
+            initargs=(self.s_list, self.signal_ref, self.fps),
+        ) as pool:
+            results = pool.map(self._compute_time_delay, indices, chunksize)
 
-    #     for i, j, delay in results:  # TODO: verify how time_delay can be out of range
-    #         # if delay <= 0.3:
-    #         #     time_delays[i, j] = delay
-    #         # else:
-    #         #     self.valid_mask[i, j] = False
-    #         time_delays[i, j] = delay
+        for i, j, delay in results:  # TODO: verify how time_delay can be out of range
+            # if delay <= 0.3:
+            #     time_delays[i, j] = delay
+            # else:
+            #     self.valid_mask[i, j] = False
+            time_delays[i, j] = delay
 
-    #     self.time_delays = time_delays
+        self.time_delays = time_delays
 
     # @staticmethod
     # def init_pool_processes_time_delay(s_list_, fps_, heart_rate_freq_):
@@ -325,62 +325,62 @@ class Pipeline:
     #     # self.time_delays = np.where(np.abs(delta_t) <= 0.3, delta_t, np.nan)
     #     self.time_delays = delta_t
     #
-    @staticmethod
-    def init_pool_processes_time_delay(s_list_, signal_ref_, fps_, max_lag_frames_):
-        global s_list
-        global signal_ref
-        global fps
-        global max_lag_frames
-        s_list = s_list_
-        signal_ref = signal_ref_
-        fps = fps_
-        max_lag_frames = max_lag_frames_
+    # @staticmethod
+    # def init_pool_processes_time_delay(s_list_, signal_ref_, fps_, max_lag_frames_):
+    #     global s_list
+    #     global signal_ref
+    #     global fps
+    #     global max_lag_frames
+    #     s_list = s_list_
+    #     signal_ref = signal_ref_
+    #     fps = fps_
+    #     max_lag_frames = max_lag_frames_
 
-    @staticmethod
-    def _compute_time_delay(args):
-        i, j = args
-        s_patch = s_list[i, j, :]
+    # @staticmethod
+    # def _compute_time_delay(args):
+    #     i, j = args
+    #     s_patch = s_list[i, j, :]
 
-        s_patch_centered = s_patch - np.mean(s_patch)
-        signal_ref_centered = signal_ref - np.mean(signal_ref)
-        correlation = np.correlate(s_patch_centered, signal_ref_centered, mode="full")
-        N = len(s_patch)
-        lags = np.arange(-N + 1, N)
-        lag_mask = np.abs(lags) <= max_lag_frames
-        correlation = correlation[lag_mask]
-        lags = lags[lag_mask]
-        if correlation.size == 0:
-            delta_t = np.nan
-        else:
-            max_corr_index = np.argmax(correlation)
-            max_lag = lags[max_corr_index]
-            delta_t = max_lag / fps
+    #     s_patch_centered = s_patch - np.mean(s_patch)
+    #     signal_ref_centered = signal_ref - np.mean(signal_ref)
+    #     correlation = np.correlate(s_patch_centered, signal_ref_centered, mode="full")
+    #     N = len(s_patch)
+    #     lags = np.arange(-N + 1, N)
+    #     lag_mask = np.abs(lags) <= max_lag_frames
+    #     correlation = correlation[lag_mask]
+    #     lags = lags[lag_mask]
+    #     if correlation.size == 0:
+    #         delta_t = np.nan
+    #     else:
+    #         max_corr_index = np.argmax(correlation)
+    #         max_lag = lags[max_corr_index]
+    #         delta_t = max_lag / fps
 
-        return (i, j, delta_t)
+    #     return (i, j, delta_t)
 
-    def calc_time_delays(self):
-        time_delays = np.zeros((self.n_patches_h, self.n_patches_w))
-        indices = [
-            (i, j)
-            for i in range(self.n_patches_h)
-            for j in range(self.n_patches_w)
-            if self.valid_mask[i, j]
-        ]
+    # def calc_time_delays(self):
+    #     time_delays = np.zeros((self.n_patches_h, self.n_patches_w))
+    #     indices = [
+    #         (i, j)
+    #         for i in range(self.n_patches_h)
+    #         for j in range(self.n_patches_w)
+    #         if self.valid_mask[i, j]
+    #     ]
 
-        max_lag_seconds = 0.3
-        max_lag_frames = int(max_lag_seconds * self.fps)
+    #     max_lag_seconds = 0.3
+    #     max_lag_frames = int(max_lag_seconds * self.fps)
 
-        with Pool(
-            processes=cpu_count(),
-            initializer=self.init_pool_processes_time_delay,
-            initargs=(self.s_list, self.signal_ref, self.fps, max_lag_frames),
-        ) as pool:
-            results = pool.map(self._compute_time_delay, indices)
+    #     with Pool(
+    #         processes=cpu_count(),
+    #         initializer=self.init_pool_processes_time_delay,
+    #         initargs=(self.s_list, self.signal_ref, self.fps, max_lag_frames),
+    #     ) as pool:
+    #         results = pool.map(self._compute_time_delay, indices)
 
-        for i, j, delta_t in results:
-            time_delays[i, j] = delta_t
+    #     for i, j, delta_t in results:
+    #         time_delays[i, j] = delta_t
 
-        self.time_delays = time_delays
+    #     self.time_delays = time_delays
 
     def get_heatmap_video(self):
         patch_height = self.height // self.n_patches_h
