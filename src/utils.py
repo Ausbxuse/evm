@@ -1,6 +1,35 @@
 import cv2
 import numpy as np
 
+def load_video(video_path):
+    image_sequence = []
+    video = cv2.VideoCapture(video_path)
+    fps = video.get(cv2.CAP_PROP_FPS)
+
+    while video.isOpened():
+        ret, frame = video.read()
+
+        if ret is False:
+            break
+
+        image_sequence.append(frame[:, :, ::-1])
+
+    video.release()
+    return np.asarray(image_sequence), fps
+
+def write_video(video, fps, output_name):
+    """
+    takes an rgb video and write to file
+    """
+    _, height, width, _ = video.shape
+    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+    video_writer = cv2.VideoWriter(output_name, fourcc, fps, (width, height))
+    for frame in video:
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        video_writer.write(frame_bgr)
+    video_writer.release()
+    print(f"Heatmap video saved as {output_name}")
+
 
 def select_center_point(image):
     selected_point = [None]
@@ -26,7 +55,7 @@ def select_center_point(image):
     return selected_point[0]
 
 
-def select_segmenting_mask(image):
+def select_segmenting_mask(image, mask_path):
     # Create a copy of the image for display and mask creation
     display_image = image.copy()
     mask = np.zeros(image.shape[:2], dtype=np.uint8)  # Single channel mask
@@ -78,6 +107,7 @@ def select_segmenting_mask(image):
         elif key == ord("s"):  # Save mask
             print("Mask saved.")
             cv2.destroyAllWindows()
+            np.save(mask_path, mask)
             return mask > 0
         elif key == ord("c"):  # Clear mask
             print("Mask cleared. Start drawing again.")

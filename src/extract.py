@@ -1,29 +1,44 @@
 from matplotlib.lines import segment_hits
-from processing import loadVideo
 import matplotlib.pyplot as plt
 import argparse
 import cv2
+import os
 import numpy as np
 from scipy.signal import csd, welch
+from scipy.signal import butter, filtfilt
 from multiprocessing import Pool, cpu_count
-
-from gaussian_pyramid import getGaussianPyramids, filterGaussianPyramids
-from constants import gaussian_kernel
-
-from utils import select_center_point, select_segmenting_mask
-from methods import get_chrom_signal, get_green_signal
-from visual import draw_box, write_video
 from skimage.restoration import unwrap_phase
+
+from constants import gaussian_kernel
+from utils import select_center_point, select_segmenting_mask
+from signals import get_chrom_signal, get_green_signal, get_pca_signal
+from visual import draw_box
+from utils import load_video, write_video
+from preproc import get_spatial_filtered_images, get_temporal_filtered_video
+
+
+def bandpass_filter(signal, lowcut, highcut, fs, order=4):
+    nyquist = 0.5 * fs  # Nyquist frequency
+    low = lowcut / nyquist
+    high = highcut / nyquist
+    b, a = butter(order, [low, high], btype='band')
+    filtered_signal = filtfilt(b, a, signal)
+    return filtered_signal
 
 
 class Pipeline:
-    def __init__(self, video_path):
-        self.video, self.fps = loadVideo(video_path=video_path)
+    def __init__(self, video_path, mask_path):
+        self.video, self.fps = load_video(video_path=video_path)
         self.n_frames, self.height, self.width, _ = self.video.shape
         self.window_size = 1 * 2 + 1
         self.n_patches_h = self.height // self.window_size
         self.n_patches_w = self.width // self.window_size
-        self.segmentation_mask = select_segmenting_mask(self.video[0])
+
+        if os.path.exists(mask_path):
+            self.segmentation_mask = np.load(mask_path)
+        else:
+            self.segmentation_mask = select_segmenting_mask(self.video[0], mask_path)
+
         new_height = self.n_patches_h * self.window_size
         new_width = self.n_patches_w * self.window_size
         mask_cropped = self.segmentation_mask[:new_height, :new_width]
@@ -32,10 +47,6 @@ class Pipeline:
             self.n_patches_h, self.window_size, self.n_patches_w, self.window_size
         )
         self.patch_segmentation_mask = mask_reshaped.all(axis=(1, 3))
-        print(self.patch_segmentation_mask)
-        print(self.segmentation_mask)
-        print(self.patch_segmentation_mask.shape)
-        print(self.segmentation_mask.shape)
 
         masked_image = self.video[0].copy()
         masked_image[~self.segmentation_mask] = [0, 0, 0]
@@ -78,15 +89,15 @@ class Pipeline:
             j * window_size : (j + 1) * window_size,
             :,
         ]
-        result = get_chrom_signal(patch_images)
+        result = get_pca_signal(patch_images)
         return (i, j, result)
 
-    def spatial_filter_video(self, freq_range):
-        pyramids = getGaussianPyramids(self.video, gaussian_kernel, 3)
-        blurred_video = filterGaussianPyramids(
-            pyramids, self.fps, freq_range, alpha=2, attenuation=1
+    def filter_video(self, freq_range):
+        spatial_filtered_video = get_spatial_filtered_images(self.video, gaussian_kernel, 3)
+        filtered_video = get_temporal_filtered_video(
+            spatial_filtered_video, self.fps, freq_range, alpha=2, attenuation=1
         )  # TODO: check alpha
-        return blurred_video
+        return filtered_video
 
     def calc_valid_mask(self):
         heart_rate_freq = self.heart_rate / 60  # in Hz
@@ -100,7 +111,7 @@ class Pipeline:
                 self.s_list[i, j, :], self.fps, heart_rate_range
             )
 
-        threshold = np.nanmean(snr_all) - 3 * np.nanstd(snr_all)
+        threshold = np.nanmean(snr_all) - 2 * np.nanstd(snr_all)
 
         self.valid_mask = (snr_all > threshold) & (~np.isnan(snr_all))
 
@@ -170,12 +181,8 @@ class Pipeline:
         plt.savefig("./out/psd.png")
 
         self.heart_rate = prominent_freq * 60
+        # self.heart_rate = 58.4375
         print("guessed bpm=", self.heart_rate)
-
-    def show_heart_rates(self):
-        draw_box(
-            self.video, self.fps, self.center_point, self.window_size, self.signal_ref
-        )
 
     def get_snr(self, signal, fs, freq_range):
         N = len(signal)
@@ -207,7 +214,7 @@ class Pipeline:
         """
         heart_rate_freq = self.heart_rate / 60  # in Hz
         heart_rate_range = (heart_rate_freq - 0.15, heart_rate_freq + 0.15)
-        filtered_video = self.spatial_filter_video(heart_rate_range)
+        filtered_video = self.filter_video(heart_rate_range)
         s_list = np.zeros((self.n_patches_h, self.n_patches_w, self.n_frames))
         tasks = [
             (i, j)
@@ -223,164 +230,76 @@ class Pipeline:
         ) as pool:
             results = pool.map(self.process_patch, tasks)
         for i, j, result in results:
+            # s_list[i, j, :] = bandpass_filter(result, self.heart_rate/60 -0.15, self.heart_rate/60+0.15, self.fps)
             s_list[i, j, :] = result
         self.s_list = s_list
 
+        amplitude_map = np.mean(np.abs(s_list), axis=2)
+
+        plt.figure(figsize=(10, 8))
+        plt.imshow(amplitude_map, cmap='viridis', interpolation='nearest')
+        plt.colorbar(label='Amplitude')
+        plt.title('Amplitude Map')
+        plt.xlabel('Width Patches')
+        plt.ylabel('Height Patches')
+        plt.savefig("./out/amplitude.png")
+
     @staticmethod
-    def init_pool_processes_time_delay(s_list_, signal_ref_, fps_):
+    def init_pool_processes_time_delay(s_list_, signal_ref_, fps_, max_lag_frames_):
         global s_list
         global signal_ref
         global fps
+        global max_lag_frames
         s_list = s_list_
         signal_ref = signal_ref_
         fps = fps_
+        max_lag_frames = max_lag_frames_
 
     @staticmethod
     def _compute_time_delay(args):
         i, j = args
         s_patch = s_list[i, j, :]
-        f, Pxy = csd(s_patch, signal_ref, fs=fps, nperseg=256)
-        idx = np.argmax(np.abs(Pxy))
-        phase_spectrum = np.unwrap(np.angle(Pxy))
-        phase_diff = phase_spectrum[idx]
-        time_delay = phase_diff / (2 * np.pi * f[idx])
-        return (i, j, time_delay)
 
-    def calc_time_delays(self, chunksize=100):
+        s_patch_centered = s_patch - np.mean(s_patch)
+        signal_ref_centered = signal_ref - np.mean(signal_ref)
+        correlation = np.correlate(s_patch_centered, signal_ref_centered, mode="full")
+        N = len(s_patch)
+        lags = np.arange(-N + 1, N)
+        lag_mask = np.abs(lags) <= max_lag_frames
+        correlation = correlation[lag_mask]
+        lags = lags[lag_mask]
+        if correlation.size == 0:
+            delta_t = np.nan
+        else:
+            max_corr_index = np.argmax(correlation)
+            max_lag = lags[max_corr_index]
+            delta_t = max_lag / fps
 
+        return (i, j, delta_t)
+
+    def calc_time_delays(self):
         time_delays = np.zeros((self.n_patches_h, self.n_patches_w))
-
         indices = [
             (i, j)
             for i in range(self.n_patches_h)
             for j in range(self.n_patches_w)
-            if self.valid_mask[i, j] and self.patch_segmentation_mask[i, j]
+            if self.valid_mask[i, j]
         ]
+
+        max_lag_seconds = 0.34
+        max_lag_frames = int(max_lag_seconds * self.fps)
 
         with Pool(
             processes=cpu_count(),
             initializer=self.init_pool_processes_time_delay,
-            initargs=(self.s_list, self.signal_ref, self.fps),
+            initargs=(self.s_list, self.signal_ref, self.fps, max_lag_frames),
         ) as pool:
-            results = pool.map(self._compute_time_delay, indices, chunksize)
+            results = pool.map(self._compute_time_delay, indices)
 
-        for i, j, delay in results:  # TODO: verify how time_delay can be out of range
-            # if delay <= 0.3:
-            #     time_delays[i, j] = delay
-            # else:
-            #     self.valid_mask[i, j] = False
-            time_delays[i, j] = delay
+        for i, j, delta_t in results:
+            time_delays[i, j] = delta_t
 
         self.time_delays = time_delays
-
-    # @staticmethod
-    # def init_pool_processes_time_delay(s_list_, fps_, heart_rate_freq_):
-    #     global s_list
-    #     global fps
-    #     global heart_rate_freq
-    #     s_list = s_list_
-    #     fps = fps_
-    #     heart_rate_freq = heart_rate_freq_
-
-    # @staticmethod
-    # def _compute_phase_angle(args):
-    #     i, j = args
-    #     s_patch = s_list[i, j, :]
-    #     N = len(s_patch)
-    #     freq_domain = np.fft.fft(s_patch)
-    #     freqs = np.fft.fftfreq(N, d=1 / fps)
-    #     idx = np.argmin(np.abs(freqs - heart_rate_freq))
-    #     phase_angle = np.angle(freq_domain[idx])
-    #     return (i, j, phase_angle)
-
-    # def calc_time_delays(self):
-    #     heart_rate_freq = self.heart_rate / 60  # in Hz
-    #     phase_angles = np.zeros((self.n_patches_h, self.n_patches_w))
-    #     indices = [
-    #         (i, j)
-    #         for i in range(self.n_patches_h)
-    #         for j in range(self.n_patches_w)
-    #         if self.valid_mask[i, j]
-    #     ]
-
-    #     with Pool(
-    #         processes=cpu_count(),
-    #         initializer=self.init_pool_processes_time_delay,
-    #         initargs=(self.s_list, self.fps, heart_rate_freq),
-    #     ) as pool:
-    #         results = pool.map(self._compute_phase_angle, indices)
-
-    #     for i, j, phase_angle in results:
-    #         phase_angles[i, j] = phase_angle
-
-    #     ref_i, ref_j = np.unravel_index(
-    #         np.nanargmax(phase_angles * self.valid_mask), phase_angles.shape
-    #     )
-    #     phi_ref = phase_angles[ref_i, ref_j]
-    #     delta_phi = phi_ref - phase_angles
-
-    #     delta_phi_unwrapped = unwrap_phase(delta_phi)
-
-    #     delta_t = delta_phi_unwrapped / (2 * np.pi * heart_rate_freq)
-    #     # self.time_delays = np.where(np.abs(delta_t) <= 0.3, delta_t, np.nan)
-    #     self.time_delays = delta_t
-    #
-    # @staticmethod
-    # def init_pool_processes_time_delay(s_list_, signal_ref_, fps_, max_lag_frames_):
-    #     global s_list
-    #     global signal_ref
-    #     global fps
-    #     global max_lag_frames
-    #     s_list = s_list_
-    #     signal_ref = signal_ref_
-    #     fps = fps_
-    #     max_lag_frames = max_lag_frames_
-
-    # @staticmethod
-    # def _compute_time_delay(args):
-    #     i, j = args
-    #     s_patch = s_list[i, j, :]
-
-    #     s_patch_centered = s_patch - np.mean(s_patch)
-    #     signal_ref_centered = signal_ref - np.mean(signal_ref)
-    #     correlation = np.correlate(s_patch_centered, signal_ref_centered, mode="full")
-    #     N = len(s_patch)
-    #     lags = np.arange(-N + 1, N)
-    #     lag_mask = np.abs(lags) <= max_lag_frames
-    #     correlation = correlation[lag_mask]
-    #     lags = lags[lag_mask]
-    #     if correlation.size == 0:
-    #         delta_t = np.nan
-    #     else:
-    #         max_corr_index = np.argmax(correlation)
-    #         max_lag = lags[max_corr_index]
-    #         delta_t = max_lag / fps
-
-    #     return (i, j, delta_t)
-
-    # def calc_time_delays(self):
-    #     time_delays = np.zeros((self.n_patches_h, self.n_patches_w))
-    #     indices = [
-    #         (i, j)
-    #         for i in range(self.n_patches_h)
-    #         for j in range(self.n_patches_w)
-    #         if self.valid_mask[i, j]
-    #     ]
-
-    #     max_lag_seconds = 0.3
-    #     max_lag_frames = int(max_lag_seconds * self.fps)
-
-    #     with Pool(
-    #         processes=cpu_count(),
-    #         initializer=self.init_pool_processes_time_delay,
-    #         initargs=(self.s_list, self.signal_ref, self.fps, max_lag_frames),
-    #     ) as pool:
-    #         results = pool.map(self._compute_time_delay, indices)
-
-    #     for i, j, delta_t in results:
-    #         time_delays[i, j] = delta_t
-
-    #     self.time_delays = time_delays
 
     def get_heatmap_video(self):
         patch_height = self.height // self.n_patches_h
@@ -449,7 +368,7 @@ class Pipeline:
         jet_colormap = cv2.resize(
             jet_colormap, (self.width, self.height), interpolation=cv2.INTER_LINEAR
         )
-        cv2.imwrite("PTT.png", jet_colormap)
+        cv2.imwrite("./out/PTT.png", jet_colormap)
 
         print("getting heatmap frames")
         heatmap_frames = self.get_heatmap_video()
@@ -461,7 +380,9 @@ class Pipeline:
         combined_mask = self.segmentation_mask & mask  # (n_frames, height, width)
         mask = combined_mask[..., np.newaxis].repeat(3, axis=-1)  # add channel dim
         overlaid_video = np.where(mask, heatmap_frames, self.video)
-        write_video(overlaid_video, self.fps, "heatmap.avi")
+
+        boxed_video = draw_box(overlaid_video, self.fps, self.center_point, self.window_size, self.signal_ref)
+        write_video(boxed_video, self.fps, "./out/heatmap.avi")
 
 
 if __name__ == "__main__":
@@ -469,8 +390,11 @@ if __name__ == "__main__":
         description="Process video for heart rate analysis."
     )
     parser.add_argument("video_path", type=str, help="Path to the video file")
+    parser.add_argument("mask_path", type=str, help="Path to the mask file")
     args = parser.parse_args()
 
-    pipe = Pipeline(args.video_path)
+    
+
+    # Instantiate the pipeline
+    pipe = Pipeline(args.video_path, args.mask_path)
     pipe.process_video()
-    # pipe.show_heart_rates()

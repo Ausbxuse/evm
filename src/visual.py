@@ -2,22 +2,7 @@ import matplotlib.pyplot as plt
 from scipy.signal import welch
 import numpy as np
 import cv2
-from scipy.signal import find_peaks, csd
-
-
-def write_video(video, fps, output_name):
-    """
-    takes an rgb video and write to file
-    """
-    _, height, width, _ = video.shape
-    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
-    video_writer = cv2.VideoWriter(output_name, fourcc, fps, (width, height))
-    for frame in video:
-        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        video_writer.write(frame_bgr)
-    video_writer.release()
-    print(f"Heatmap video saved as {output_name}")
-
+from scipy.signal import find_peaks
 
 def draw_intensity(signal):
 
@@ -81,6 +66,8 @@ def draw_box(
         (width, height),
     )
 
+    boxed_frames = []
+
     for i in range(n_frames):
         frame = video[i].astype(np.uint8)
         top_left = (center_point[1] - window_radius, center_point[0] - window_radius)
@@ -142,6 +129,6 @@ def draw_box(
         )
 
         boxed_video.write(cv2.cvtColor(boxed_frame, cv2.COLOR_RGB2BGR))
+        boxed_frames.append(boxed_frame)
+    return np.array(boxed_frames) # in RGB
 
-    boxed_video.release()
-    print(f"Boxed region video saved to {boxed_video_path}")
