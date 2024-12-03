@@ -1,20 +1,20 @@
-from matplotlib.lines import segment_hits
-import matplotlib.pyplot as plt
 import argparse
-import cv2
 import os
-import numpy as np
-from scipy.signal import csd, welch
-from scipy.signal import butter, filtfilt
 from multiprocessing import Pool, cpu_count
+
+import cv2
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.lines import segment_hits
+from scipy.signal import butter, csd, filtfilt, welch
 from skimage.restoration import unwrap_phase
 
 from constants import gaussian_kernel
-from utils import select_center_point, select_segmenting_mask
-from signals import get_chrom_signal, get_green_signal, get_pca_signal
-from visual import draw_box
-from utils import load_video, write_video
 from preproc import get_spatial_filtered_images, get_temporal_filtered_video
+from signals import get_chrom_signal, get_green_signal, get_pca_signal
+from utils import (load_video, select_center_point, select_segmenting_mask,
+                   write_video)
+from visual import draw_box
 
 
 def bandpass_filter(signal, lowcut, highcut, fs, order=4):
@@ -35,7 +35,7 @@ class Pipeline:
         self.n_patches_w = self.width // self.window_size
 
         if os.path.exists(mask_path):
-            self.segmentation_mask = np.load(mask_path)
+            self.segmentation_mask = np.load(mask_path).astype(bool)
         else:
             self.segmentation_mask = select_segmenting_mask(self.video[0], mask_path)
 
@@ -147,7 +147,7 @@ class Pipeline:
         self.signal_ref = signal_ref
 
     def calc_heart_rate(self):
-        signal = get_chrom_signal(  # NOTE: Chrom might work better
+        signal = get_pca_signal(  # NOTE: Chrom might work better
             self.video[
                 :,
                 self.center_point[0] - 10 : self.center_point[0] + 10,
@@ -180,8 +180,8 @@ class Pipeline:
         plt.legend()
         plt.savefig("./out/psd.png")
 
-        self.heart_rate = prominent_freq * 60
-        # self.heart_rate = 58.4375
+        # self.heart_rate = prominent_freq * 60
+        self.heart_rate = 70
         print("guessed bpm=", self.heart_rate)
 
     def get_snr(self, signal, fs, freq_range):
@@ -308,15 +308,10 @@ class Pipeline:
         i_indices, j_indices = np.meshgrid(
             np.arange(self.n_patches_h), np.arange(self.n_patches_w), indexing="ij"
         )
-        y_starts = i_indices * patch_height
-        y_ends = (i_indices + 1) * patch_height
-        x_starts = j_indices * patch_width
-        x_ends = (j_indices + 1) * patch_width
-
-        y_start_flat = y_starts.flatten()
-        y_end_flat = y_ends.flatten()
-        x_start_flat = x_starts.flatten()
-        x_end_flat = x_ends.flatten()
+        y_start = (i_indices * patch_height).flatten()
+        y_end = ( (i_indices + 1) * patch_height ).flatten()
+        x_start = ( j_indices * patch_width ).flatten()
+        x_end = ( (j_indices + 1) * patch_width ).flatten()
 
         valid_segments = (self.valid_mask & self.patch_segmentation_mask).flatten()
 
@@ -331,11 +326,11 @@ class Pipeline:
 
         heatmaps = np.zeros((self.n_frames, self.height, self.width), dtype=np.float32)
 
-        for idx in range(len(y_start_flat)):
-            y_start = y_start_flat[idx]
-            y_end = y_end_flat[idx]
-            x_start = x_start_flat[idx]
-            x_end = x_end_flat[idx]
+        for idx in range(len(y_start)):
+            y_start = y_start[idx]
+            y_end = y_end[idx]
+            x_start = x_start[idx]
+            x_end = x_end[idx]
             heatmaps[:, y_start:y_end, x_start:x_end] = amplitudes[
                 :, idx, np.newaxis, np.newaxis
             ]
@@ -393,8 +388,5 @@ if __name__ == "__main__":
     parser.add_argument("mask_path", type=str, help="Path to the mask file")
     args = parser.parse_args()
 
-    
-
-    # Instantiate the pipeline
     pipe = Pipeline(args.video_path, args.mask_path)
     pipe.process_video()

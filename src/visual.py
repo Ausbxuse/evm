@@ -1,19 +1,20 @@
-import matplotlib.pyplot as plt
-from scipy.signal import welch
-import numpy as np
 import cv2
-from scipy.signal import find_peaks
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.signal import find_peaks, welch
 
-def draw_intensity(signal):
 
+def draw_signals(signals, output_file):
     plt.figure(figsize=(10, 5))
-    plt.plot(signal, label="Green Channel Intensity", color="green")
+    for i, signal in enumerate(signals):
+        plt.plot(signal, label=f"Signal {i+1}")
+    # plt.plot(signals, label="Signal Intensity", color="green")
     plt.xlabel("Frame")
     plt.ylabel("Average Intensity")
-    plt.title("Normalized Green Channel Intensity Over Time")
+    plt.title("Intensity Over Time")
     plt.grid(True)
     plt.legend()
-    plt.savefig("./out/intensity.png")
+    plt.savefig(output_file)
     plt.close()
 
 
@@ -130,5 +131,4 @@ def draw_box(
 
         boxed_video.write(cv2.cvtColor(boxed_frame, cv2.COLOR_RGB2BGR))
         boxed_frames.append(boxed_frame)
-    return np.array(boxed_frames) # in RGB
-
+    return np.array(boxed_frames)  # in RGB
